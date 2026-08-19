@@ -255,7 +255,6 @@ function isAbortError(err: unknown): boolean {
 function readWireUsage(finishEvent: Record<string, unknown>): Usage | undefined {
 	const totalUsage = finishEvent.totalUsage;
 	if (!isRecord(totalUsage)) return undefined;
-	const input = typeof totalUsage.inputTokens === "number" ? totalUsage.inputTokens : 0;
 	const output = typeof totalUsage.outputTokens === "number" ? totalUsage.outputTokens : 0;
 	let cacheRead = 0;
 	let cacheWrite = 0;
@@ -264,6 +263,18 @@ function readWireUsage(finishEvent: Record<string, unknown>): Usage | undefined 
 		if (typeof details.cacheReadTokens === "number") cacheRead = details.cacheReadTokens;
 		if (typeof details.cacheWriteTokens === "number") cacheWrite = details.cacheWriteTokens;
 	}
+	// The gateway's inputTokens is inclusive: on consecutive turns
+	// cacheRead(N) ≈ inputTokens(N-1), i.e. the cache-served prefix is counted
+	// inside inputTokens (verified against live sessions). omp's Usage contract
+	// is disjoint — input = uncached, cacheRead = served from cache — so back
+	// the cached portion out or the TUI cache-hit denominator and /stats
+	// "Uncached Input" both overcount.
+	const input = Math.max(
+		0,
+		(typeof totalUsage.inputTokens === "number" ? totalUsage.inputTokens : 0) -
+			cacheRead -
+			cacheWrite,
+	);
 	// Command Code bills its own credits, not per-token USD — cost is honestly zero.
 	return {
 		input,

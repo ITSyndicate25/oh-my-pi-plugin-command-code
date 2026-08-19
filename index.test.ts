@@ -80,11 +80,16 @@ function enc(text: string): Uint8Array {
 	return new TextEncoder().encode(text);
 }
 
-/** The valid ndjson body used across stream tests. */
+/**
+ * The valid ndjson body used across stream tests. The gateway reports
+ * `inputTokens` inclusive of the cache-served prefix: 5 input + 3 read from
+ * cache + 2 written to cache → inputTokens 10, matching live sessions where
+ * `cacheRead(N) ≈ inputTokens(N-1)`.
+ */
 const VALID_NDJSON =
 	'{"type":"text-delta","text":"He"}\n' +
 	'{"type":"text-delta","text":"llo"}\n' +
-	'{"type":"finish","finishReason":"end_turn","totalUsage":{"inputTokens":5,"outputTokens":2}}\n';
+	'{"type":"finish","finishReason":"end_turn","totalUsage":{"inputTokens":10,"outputTokens":2,"inputTokenDetails":{"cacheReadTokens":3,"cacheWriteTokens":2}}}\n';
 
 /** Split VALID_NDJSON mid-line into two chunks (the break is inside `llo`). */
 function splitMidLine(): [Uint8Array, Uint8Array] {
@@ -479,8 +484,13 @@ describe("stream — ndjson decoding across a mid-line split", () => {
 		const msg = await finalMessage(stream);
 		const textPart = msg.content.find((c) => c.type === "text");
 		expect(textPart?.type === "text" ? textPart.text : "").toBe("Hello");
+		// inputTokens is inclusive of the cache-served prefix; omp's Usage
+		// contract is disjoint, so input backs out the cached buckets.
 		expect(msg.usage.input).toBe(5);
 		expect(msg.usage.output).toBe(2);
+		expect(msg.usage.cacheRead).toBe(3);
+		expect(msg.usage.cacheWrite).toBe(2);
+		expect(msg.usage.totalTokens).toBe(12);
 	});
 });
 
