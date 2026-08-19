@@ -491,6 +491,42 @@ describe("stream — ndjson decoding across a mid-line split", () => {
 		expect(msg.usage.cacheRead).toBe(3);
 		expect(msg.usage.cacheWrite).toBe(2);
 		expect(msg.usage.totalTokens).toBe(12);
+		// Timing fields omp reads for the TTFT/TPS usage row must be populated.
+		expect(typeof msg.duration).toBe("number");
+		expect(msg.duration).toBeGreaterThan(0);
+		expect(typeof msg.ttft).toBe("number");
+		expect(msg.ttft).toBeGreaterThan(0);
+		if (msg.duration !== undefined) expect(msg.ttft).toBeLessThanOrEqual(msg.duration);
+	});
+
+	test("mid-stream error after content still stamps duration/ttft on the terminal message", async () => {
+		const body =
+			'{"type":"text-delta","text":"partial"}\n' +
+			'{"type":"error","error":{"message":"stream blew up","statusCode":500}}\n';
+		const { fetch: fetchImpl } = fetchByBearer({
+			"Bearer user_test": () => makeResponse([enc(body)]),
+		});
+		const auth = stubAuthStorage({ keys: ["user_test"] });
+
+		const streamFn = createCommandCodeStream({
+			getAuthStorage: () => auth,
+			getSessionId: () => "sess-1",
+			getProjectSlug: () => "0123456789",
+			fetchImpl,
+		});
+
+		const stream = streamFn(makeModel(), makeContext());
+		const events = await collectEvents(stream);
+		const errEvent = events.find((e) => e.type === "error");
+
+		expect(errEvent?.type).toBe("error");
+		if (errEvent?.type === "error") {
+			expect(errEvent.error.errorMessage).toContain("stream blew up");
+			expect(typeof errEvent.error.duration).toBe("number");
+			expect(errEvent.error.duration).toBeGreaterThan(0);
+			expect(typeof errEvent.error.ttft).toBe("number");
+			expect(errEvent.error.ttft).toBeGreaterThan(0);
+		}
 	});
 });
 

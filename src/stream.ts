@@ -517,6 +517,19 @@ export function createCommandCodeStream(deps: {
 		let contentIndex = 0;
 		let openBlock: "text" | "thinking" | undefined;
 		let sawToolCall = false;
+		const startedAt = performance.now();
+		let firstTokenAt: number | undefined;
+
+		/** Stamp the timing fields omp reads for the TTFT/TPS usage row. */
+		const settleTiming = (): void => {
+			partial.duration = performance.now() - startedAt;
+			if (firstTokenAt !== undefined) partial.ttft = firstTokenAt - startedAt;
+		};
+
+		/** First observable output (text, reasoning, or a tool call) marks TTFT. */
+		const markFirstToken = (): void => {
+			if (firstTokenAt === undefined) firstTokenAt = performance.now();
+		};
 
 		const fail = (message: string, status?: number): void => {
 			partial.stopReason = "error";
@@ -576,6 +589,7 @@ export function createCommandCodeStream(deps: {
 				switch (event.type) {
 					case "text-delta": {
 						if (typeof event.text !== "string") break;
+						markFirstToken();
 						if (openBlock !== "text") {
 							closeOpenBlock();
 							partial.content.push({ type: "text", text: "" });
@@ -588,6 +602,7 @@ export function createCommandCodeStream(deps: {
 						break;
 					}
 					case "reasoning-start": {
+						markFirstToken();
 						if (openBlock !== "thinking") {
 							closeOpenBlock();
 							partial.content.push({ type: "thinking", thinking: "" });
@@ -598,6 +613,7 @@ export function createCommandCodeStream(deps: {
 					}
 					case "reasoning-delta": {
 						if (typeof event.text !== "string") break;
+						markFirstToken();
 						if (openBlock !== "thinking") {
 							closeOpenBlock();
 							partial.content.push({ type: "thinking", thinking: "" });
@@ -622,6 +638,7 @@ export function createCommandCodeStream(deps: {
 							break;
 						}
 						closeOpenBlock();
+						markFirstToken();
 						sawToolCall = true;
 						const input: Record<string, unknown> = isRecord(event.input) ? event.input : {};
 						const toolCall: ToolCall = {
@@ -648,6 +665,7 @@ export function createCommandCodeStream(deps: {
 					}
 					case "finish": {
 						closeOpenBlock();
+						settleTiming();
 						const usage = readWireUsage(event);
 						if (usage) partial.usage = usage;
 						const finishReason = typeof event.finishReason === "string" ? event.finishReason : "";
@@ -667,6 +685,7 @@ export function createCommandCodeStream(deps: {
 						const status = readErrorStatusCode(event);
 						if (openBlock !== undefined || contentIndex > 0) {
 							closeOpenBlock();
+							settleTiming();
 							fail(readErrorMessage(event) ?? "Command Code stream failed", status);
 							return "content-failed";
 						}
@@ -680,6 +699,7 @@ export function createCommandCodeStream(deps: {
 
 		// Stream ended without a finish event.
 		if (openBlock !== undefined || contentIndex > 0) closeOpenBlock();
+		settleTiming();
 		fail(MISSING_FINISH_MESSAGE);
 		return "content-failed";
 	}
