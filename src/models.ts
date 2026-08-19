@@ -23,6 +23,13 @@ const ZERO_COST = {
 
 export const MODELS_PATH = "/provider/v1/models";
 
+/**
+ * Bound the discovery request so a host that accepts the connection but
+ * never completes the response cannot hang catalog fetch indefinitely.
+ * Kept under omp's 15 s dynamic-model wrapper timeout so we fail first.
+ */
+export const DISCOVERY_TIMEOUT_MS = 10_000;
+
 /** The vendor's `qn` default. */
 export const DEFAULT_MODEL_ID = "deepseek/deepseek-v4-flash";
 
@@ -87,11 +94,28 @@ export function parseModelsList(body: unknown): DiscoveredModelConfig[] {
 export async function fetchCommandCodeModels(
 	_apiKey?: string,
 	baseUrl: string = resolveBaseUrl(),
+	timeoutMs: number = DISCOVERY_TIMEOUT_MS,
 ): Promise<readonly ProviderModelConfig[]> {
 	const url = `${baseUrl.replace(/\/$/, "")}${MODELS_PATH}`;
-	const response = await fetch(url, { headers: { Accept: "application/json" } });
+	let response: Response;
+	try {
+		response = await fetch(url, {
+			headers: { Accept: "application/json" },
+			signal: AbortSignal.timeout(timeoutMs),
+		});
+	} catch (error) {
+		if (isAbortFailure(error)) {
+			throw new Error(`Command Code models: timed out after ${timeoutMs}ms`);
+		}
+		throw error;
+	}
 	if (!response.ok) {
 		throw new Error(`Command Code models: HTTP ${response.status}`);
 	}
 	return parseModelsList(await response.json()) as ProviderModelConfig[];
+}
+
+/** `AbortSignal.timeout` rejects with a `TimeoutError` DOMException. */
+function isAbortFailure(error: unknown): boolean {
+	return error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
 }

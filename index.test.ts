@@ -22,7 +22,12 @@ import {
 	resolveBaseUrl,
 	sanitizeApiKey,
 } from "./src/api";
-import { DEFAULT_MODEL_ID, fetchCommandCodeModels, parseModelsList } from "./src/models";
+import {
+	DEFAULT_MODEL_ID,
+	DISCOVERY_TIMEOUT_MS,
+	fetchCommandCodeModels,
+	parseModelsList,
+} from "./src/models";
 import { createCommandCodeStream } from "./src/stream";
 
 /* ------------------------------------------------------------------ *
@@ -414,6 +419,31 @@ describe("models discovery", () => {
 		await expect(fetchCommandCodeModels(undefined, "https://api.commandcode.ai")).rejects.toThrow(
 			"HTTP 503",
 		);
+	});
+
+	test("a hung fetch is aborted; timeout maps to a clear error", async () => {
+		let signal: AbortSignal | undefined;
+		globalThis.fetch = Object.assign(
+			async (_input: URL | RequestInfo, init?: RequestInit | BunFetchRequestInit) => {
+				signal = init?.signal ?? undefined;
+				// Never resolves on its own: abort only comes from our signal.
+				return new Promise<Response>((_resolve, reject) => {
+					init?.signal?.addEventListener("abort", () =>
+						reject(init?.signal?.reason ?? new Error("aborted")),
+					);
+				});
+			},
+			{ preconnect: () => undefined },
+		);
+		await expect(
+			fetchCommandCodeModels(undefined, "https://api.commandcode.ai", 20),
+		).rejects.toThrow("Command Code models: timed out after 20ms");
+		expect(signal).toBeInstanceOf(AbortSignal);
+		expect(signal?.aborted).toBe(true);
+	});
+
+	test("DISCOVERY_TIMEOUT_MS is 10s — under omp's 15s wrapper so we fail first", () => {
+		expect(DISCOVERY_TIMEOUT_MS).toBe(10_000);
 	});
 
 	test("DEFAULT_MODEL_ID is the vendor default", () => {
