@@ -22,7 +22,12 @@ import {
 	resolveBaseUrl,
 	sanitizeApiKey,
 } from "./src/api";
-import { COMMAND_CODE_MODELS, DEFAULT_MODEL_ID } from "./src/models";
+import {
+	DEFAULT_MODEL_ID,
+	DISCOVERY_TIMEOUT_MS,
+	fetchCommandCodeModels,
+	parseModelsList,
+} from "./src/models";
 import { createCommandCodeStream } from "./src/stream";
 
 /* ------------------------------------------------------------------ *
@@ -319,35 +324,126 @@ describe("api — buildHeaders", () => {
 });
 
 /* ------------------------------------------------------------------ *
- * 3. models catalog
+ * 3. models discovery
  * ------------------------------------------------------------------ */
 
-describe("models catalog", () => {
-	test("has 52 entries", () => {
-		expect(COMMAND_CODE_MODELS).toHaveLength(52);
+const SAMPLE_ROW = {
+	id: "claude-sonnet-5",
+	object: "model",
+	created: 1,
+	owned_by: "command-code",
+	name: "Claude Sonnet 5",
+	context_length: 1_000_000,
+};
+
+describe("models discovery", () => {
+	const realFetch = globalThis.fetch;
+	afterEach(() => {
+		globalThis.fetch = realFetch;
 	});
 
-	test("omits the three vendor-hidden ids", () => {
-		const ids = COMMAND_CODE_MODELS.map((m) => m.id);
-		expect(ids).not.toContain("MiniMaxAI/MiniMax-M3-Free");
-		expect(ids).not.toContain("tencent/Hy3");
-		expect(ids).not.toContain("inclusionai/ling-3.0-flash-free");
+	test("maps id, name, and context_length; zeros cost; leaves reasoning and input unset", () => {
+		const [model] = parseModelsList({ object: "list", data: [SAMPLE_ROW] });
+		expect(model).toEqual({
+			id: "claude-sonnet-5",
+			name: "Claude Sonnet 5",
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 1_000_000,
+			maxTokens: 64_000,
+		});
+		expect(model).not.toHaveProperty("reasoning");
+		expect(model).not.toHaveProperty("input");
 	});
 
-	test("every entry has maxTokens 64000 and zero cost", () => {
-		for (const m of COMMAND_CODE_MODELS) {
-			expect(m.maxTokens).toBe(64_000);
-			expect(m.cost).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
-		}
+	test("skips malformed rows and later duplicates", () => {
+		const models = parseModelsList({
+			object: "list",
+			data: [
+				SAMPLE_ROW,
+				{ ...SAMPLE_ROW, name: "duplicate" },
+				{ id: "  ", name: "blank", context_length: 1000 },
+				{ id: "bad-window", name: "bad", context_length: 0 },
+				{ id: "deepseek/deepseek-v4-flash", name: "Flash", context_length: 1_000_000 },
+				null,
+				"skip",
+			],
+		});
+		expect(models.map((m) => m.id)).toEqual(["claude-sonnet-5", "deepseek/deepseek-v4-flash"]);
 	});
 
-	test("vision models include image, non-vision do not (spot checks)", () => {
-		const byId = new Map(COMMAND_CODE_MODELS.map((m) => [m.id, m]));
-		const sonnet = byId.get("claude-sonnet-5");
-		expect(sonnet?.input).toContain("image");
-		const deepseek = byId.get("deepseek/deepseek-v4-flash");
-		expect(deepseek?.input).not.toContain("image");
-		expect(deepseek?.input).toEqual(["text"]);
+	test("falls back to id when name is missing", () => {
+		const [model] = parseModelsList({
+			object: "list",
+			data: [{ id: "xai/grok-4.6", context_length: 500_000 }],
+		});
+		expect(model?.name).toBe("xai/grok-4.6");
+	});
+
+	test("throws when the envelope is not a data array", () => {
+		expect(() => parseModelsList({ models: [SAMPLE_ROW] })).toThrow("expected { data: Model[] }");
+		expect(() => parseModelsList(null)).toThrow("expected { data: Model[] }");
+	});
+
+	test("throws when every row is invalid", () => {
+		expect(() => parseModelsList({ object: "list", data: [{ id: "x" }] })).toThrow("empty catalog");
+	});
+
+	test("GET /provider/v1/models without Authorization", async () => {
+		const seen: { url: string; authorization: string | null }[] = [];
+		globalThis.fetch = Object.assign(
+			async (input: URL | RequestInfo, init?: RequestInit | BunFetchRequestInit) => {
+				const headers = new Headers(init?.headers);
+				seen.push({
+					url: String(input),
+					authorization: headers.get("Authorization"),
+				});
+				return Response.json({ object: "list", data: [SAMPLE_ROW] });
+			},
+			{ preconnect: () => undefined },
+		);
+		const models = await fetchCommandCodeModels(
+			"user_should_not_be_sent",
+			"https://api.commandcode.ai/",
+		);
+		expect(seen).toEqual([
+			{ url: "https://api.commandcode.ai/provider/v1/models", authorization: null },
+		]);
+		expect(models).toHaveLength(1);
+		expect(models[0]?.id).toBe("claude-sonnet-5");
+	});
+
+	test("throws on a non-OK response", async () => {
+		globalThis.fetch = Object.assign(async () => new Response("nope", { status: 503 }), {
+			preconnect: () => undefined,
+		});
+		await expect(fetchCommandCodeModels(undefined, "https://api.commandcode.ai")).rejects.toThrow(
+			"HTTP 503",
+		);
+	});
+
+	test("a hung fetch is aborted; timeout maps to a clear error", async () => {
+		let signal: AbortSignal | undefined;
+		globalThis.fetch = Object.assign(
+			async (_input: URL | RequestInfo, init?: RequestInit | BunFetchRequestInit) => {
+				signal = init?.signal ?? undefined;
+				// Never resolves on its own: abort only comes from our signal.
+				return new Promise<Response>((_resolve, reject) => {
+					init?.signal?.addEventListener("abort", () =>
+						reject(init?.signal?.reason ?? new Error("aborted")),
+					);
+				});
+			},
+			{ preconnect: () => undefined },
+		);
+		await expect(
+			fetchCommandCodeModels(undefined, "https://api.commandcode.ai", 20),
+		).rejects.toThrow("Command Code models: timed out after 20ms");
+		expect(signal).toBeInstanceOf(AbortSignal);
+		expect(signal?.aborted).toBe(true);
+	});
+
+	test("DISCOVERY_TIMEOUT_MS is 10s — under omp's 15s wrapper so we fail first", () => {
+		expect(DISCOVERY_TIMEOUT_MS).toBe(10_000);
 	});
 
 	test("DEFAULT_MODEL_ID is the vendor default", () => {
@@ -618,7 +714,8 @@ describe("extension registration", () => {
 		expect(provider.config?.api).toBe("commandcode-generate");
 		expect(provider.config?.oauth?.name).toBe("Command Code");
 		expect(typeof provider.config?.oauth?.login).toBe("function");
-		expect(provider.config?.models).toHaveLength(COMMAND_CODE_MODELS.length);
+		expect(provider.config?.models).toBeUndefined();
+		expect(provider.config?.fetchDynamicModels).toBe(fetchCommandCodeModels);
 		expect(commands).toEqual([]);
 	});
 

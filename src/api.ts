@@ -3,8 +3,9 @@
  *
  * Reverse-engineered from `command-code@1.14.0`. The gateway at
  * `https://api.commandcode.ai` speaks a bespoke protocol: `POST /alpha/generate`
- * (streaming ndjson) and `GET /alpha/whoami` (key validation). There is no
- * `/models` discovery endpoint and no OpenAI/Anthropic wire compatibility.
+ * (streaming ndjson), `GET /alpha/whoami` (key validation), and a public
+ * OpenAI-shaped `GET /provider/v1/models` catalog. Generation is not
+ * OpenAI/Anthropic wire compatible.
  */
 
 export const PROVIDER_ID = "commandcode";

@@ -1,11 +1,11 @@
 # oh-my-pi-plugin-command-code
 
-A [Command Code](https://commandcode.ai) model provider plugin for [Oh My Pi](https://github.com/metaphorics/oh-my-pi) (omp). It exposes the ~52 models offered by the Command Code gateway through omp's provider system, talking to the real `https://api.commandcode.ai` endpoint with multi-key quota rotation.
+A [Command Code](https://commandcode.ai) model provider plugin for [Oh My Pi](https://github.com/metaphorics/oh-my-pi) (omp). It discovers models from `GET https://api.commandcode.ai/provider/v1/models` and talks to the gateway with multi-key quota rotation.
 
 ## What it does
 
-- Registers the `commandcode` provider against the real Command Code gateway (`https://api.commandcode.ai`), not the fabricated `/provider/v1` surface.
-- Ships a static catalog of the ~52 models the Command Code CLI exposes (there is no discovery endpoint to query).
+- Registers the `commandcode` provider against the Command Code gateway (`https://api.commandcode.ai`).
+- Discovers the live catalog from the public `GET /provider/v1/models` endpoint (omp caches it for 24 h).
 - Speaks the gateway's bespoke newline-delimited JSON streaming protocol on `POST /alpha/generate`.
 - Implements the Command Code browser login flow so keys land in omp's own credential store.
 - Rotates across every key stored for the provider: when one key's quota is exhausted it is blocked and the next stored key is used; when all keys are exhausted the turn fails fast with the earliest reset time rather than waiting.
@@ -66,7 +66,7 @@ A partial turn already on the wire is never replayed — once any content has be
 ## Notes
 
 - Command Code bills its own credits, not per-token USD, so every model in the catalog reports a zero cost. The provider reports real token usage from the gateway's `finish` event.
-- The model catalog is a snapshot of `command-code@1.14.0`. When Command Code adds models, `src/models.ts` must be regenerated from a newer bundle; there is no discovery endpoint to automate it.
+- The model catalog is fetched from `GET /provider/v1/models` at runtime. Cost is always zero. Reasoning and vision come from omp's bundled catalog by bare id when the public list does not advertise them.
 - `~/.commandcode/auth.json` and `COMMAND_CODE_API_KEY` are **not** read. Keys enter only through `/login`.
 - The gateway's `x-session-id` header carries omp's own session id, read fresh on every request. Starting a new session with `/session new` therefore re-keys the wire thread and the sticky credential together.
 
