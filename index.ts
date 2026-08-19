@@ -4,7 +4,7 @@ import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 
 import { API_ID, PROVIDER_ID, resolveBaseUrl } from "./src/api";
 import { loginWithCommandCode } from "./src/login";
-import { COMMAND_CODE_MODELS } from "./src/models";
+import { fetchCommandCodeModels } from "./src/models";
 import { createCommandCodeStream } from "./src/stream";
 
 // Captured on session_start; read by the stream.
@@ -25,7 +25,7 @@ export default function commandCodeProvider(pi: ExtensionAPI): void {
 	pi.registerProvider(PROVIDER_ID, {
 		baseUrl: resolveBaseUrl(),
 		api: API_ID,
-		models: COMMAND_CODE_MODELS,
+		fetchDynamicModels: fetchCommandCodeModels,
 		streamSimple: createCommandCodeStream({
 			getAuthStorage: () => authStorage,
 			getSessionId: () => getSessionId(),
