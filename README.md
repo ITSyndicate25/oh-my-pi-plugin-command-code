@@ -22,7 +22,7 @@ omp plugin install oh-my-pi-plugin-command-code
 From this repository:
 
 ```bash
-omp plugin install https://github.com/metaphorics/oh-my-pi-plugin-command-code
+omp plugin install https://github.com/ITSyndicate25/oh-my-pi-plugin-command-code
 ```
 
 ## Getting an API key
