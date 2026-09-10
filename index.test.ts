@@ -80,11 +80,16 @@ function enc(text: string): Uint8Array {
 	return new TextEncoder().encode(text);
 }
 
-/** The valid ndjson body used across stream tests. */
+/**
+ * The valid ndjson body used across stream tests. The gateway reports
+ * `inputTokens` inclusive of the cache-served prefix: 5 input + 3 read from
+ * cache + 2 written to cache → inputTokens 10, matching live sessions where
+ * `cacheRead(N) ≈ inputTokens(N-1)`.
+ */
 const VALID_NDJSON =
 	'{"type":"text-delta","text":"He"}\n' +
 	'{"type":"text-delta","text":"llo"}\n' +
-	'{"type":"finish","finishReason":"end_turn","totalUsage":{"inputTokens":5,"outputTokens":2}}\n';
+	'{"type":"finish","finishReason":"end_turn","totalUsage":{"inputTokens":10,"outputTokens":2,"inputTokenDetails":{"cacheReadTokens":3,"cacheWriteTokens":2}}}\n';
 
 /** Split VALID_NDJSON mid-line into two chunks (the break is inside `llo`). */
 function splitMidLine(): [Uint8Array, Uint8Array] {
@@ -479,8 +484,49 @@ describe("stream — ndjson decoding across a mid-line split", () => {
 		const msg = await finalMessage(stream);
 		const textPart = msg.content.find((c) => c.type === "text");
 		expect(textPart?.type === "text" ? textPart.text : "").toBe("Hello");
+		// inputTokens is inclusive of the cache-served prefix; omp's Usage
+		// contract is disjoint, so input backs out the cached buckets.
 		expect(msg.usage.input).toBe(5);
 		expect(msg.usage.output).toBe(2);
+		expect(msg.usage.cacheRead).toBe(3);
+		expect(msg.usage.cacheWrite).toBe(2);
+		expect(msg.usage.totalTokens).toBe(12);
+		// Timing fields omp reads for the TTFT/TPS usage row must be populated.
+		expect(typeof msg.duration).toBe("number");
+		expect(msg.duration).toBeGreaterThan(0);
+		expect(typeof msg.ttft).toBe("number");
+		expect(msg.ttft).toBeGreaterThan(0);
+		if (msg.duration !== undefined) expect(msg.ttft).toBeLessThanOrEqual(msg.duration);
+	});
+
+	test("mid-stream error after content still stamps duration/ttft on the terminal message", async () => {
+		const body =
+			'{"type":"text-delta","text":"partial"}\n' +
+			'{"type":"error","error":{"message":"stream blew up","statusCode":500}}\n';
+		const { fetch: fetchImpl } = fetchByBearer({
+			"Bearer user_test": () => makeResponse([enc(body)]),
+		});
+		const auth = stubAuthStorage({ keys: ["user_test"] });
+
+		const streamFn = createCommandCodeStream({
+			getAuthStorage: () => auth,
+			getSessionId: () => "sess-1",
+			getProjectSlug: () => "0123456789",
+			fetchImpl,
+		});
+
+		const stream = streamFn(makeModel(), makeContext());
+		const events = await collectEvents(stream);
+		const errEvent = events.find((e) => e.type === "error");
+
+		expect(errEvent?.type).toBe("error");
+		if (errEvent?.type === "error") {
+			expect(errEvent.error.errorMessage).toContain("stream blew up");
+			expect(typeof errEvent.error.duration).toBe("number");
+			expect(errEvent.error.duration).toBeGreaterThan(0);
+			expect(typeof errEvent.error.ttft).toBe("number");
+			expect(errEvent.error.ttft).toBeGreaterThan(0);
+		}
 	});
 });
 
